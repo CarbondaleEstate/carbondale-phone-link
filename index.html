@@ -1,96 +1,128 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-    <title>Carbondale Phone Link</title>
-
-    <link rel="manifest" href="manifest.json">
-
-    <meta name="theme-color" content="#000000">
-
-    <style>
-        body {
-            margin: 0;
-            background: #000000;
-            color: #B5121B;
-            font-family: Arial, sans-serif;
-            text-align: center;
-            padding: 70px 20px;
-        }
-
-        .panel {
-            max-width: 420px;
-            margin: auto;
-            padding: 35px;
-            border: 2px solid #B5121B;
-            border-radius: 24px;
-        }
-
-        h1 {
-            margin-bottom: 5px;
-        }
-
-        h2 {
-            margin-top: 0;
-        }
-
-        button {
-            margin-top: 25px;
-            padding: 15px 22px;
-            background: #000000;
-            color: #B5121B;
-            border: 2px solid #B5121B;
-            border-radius: 12px;
-            font-size: 17px;
-            font-weight: bold;
-        }
-    </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#B5121B">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <title>Carbondale Phone Link</title>
+  <style>
+    :root { --red:#B5121B; --black:#000; --near:#090909; --dim:#5c0a0f; }
+    * { box-sizing:border-box; }
+    html,body { min-height:100%; margin:0; background:#000; color:var(--red); font-family:Arial,Helvetica,sans-serif; }
+    body { display:flex; align-items:center; justify-content:center; padding:28px; }
+    .shell { width:min(620px,100%); border:1px solid var(--red); border-radius:24px; background:#030303; padding:26px; box-shadow:0 0 0 1px #230307 inset; }
+    .brand { font-size:12px; letter-spacing:.34em; opacity:.78; }
+    h1 { margin:12px 0 8px; font-size:31px; font-weight:600; letter-spacing:.02em; }
+    p { margin:0 0 18px; line-height:1.45; color:#a60f18; }
+    .status { min-height:50px; border:1px solid #3d0509; border-radius:15px; padding:14px; background:#050505; margin:18px 0; line-height:1.4; }
+    button { width:100%; border:1px solid var(--red); border-radius:14px; background:#000; color:var(--red); font-weight:700; letter-spacing:.08em; padding:15px 14px; margin-top:10px; font-size:14px; }
+    button:active { background:#140103; }
+    .secondary { border-color:#64090e; color:#8e0d14; }
+    textarea { width:100%; min-height:155px; margin-top:12px; border:1px solid #3d0509; border-radius:12px; background:#000; color:#7f0b11; padding:12px; font-family:Consolas,monospace; font-size:11px; resize:vertical; }
+    .small { font-size:12px; opacity:.72; margin-top:14px; }
+    .hidden { display:none; }
+  </style>
 </head>
-
 <body>
-
-<div class="panel">
-
-    <h1>CARBONDALE</h1>
-    <h2>PHONE LINK</h2>
-
-    <p>Carbondale Estate phone connection test.</p>
-
-    <button id="testButton">
-        ENABLE & TEST NOTIFICATION
-    </button>
-
-</div>
-
+  <main class="shell">
+    <div class="brand">CARBONDALE</div>
+    <h1>Phone Link</h1>
+    <p>This pairs this iPhone with the Word Clock remote-push test. No SMS and no phone number are used.</p>
+    <div id="status" class="status">Ready to pair this iPhone.</div>
+    <button id="pair">PAIR THIS IPHONE</button>
+    <section id="pairingArea" class="hidden">
+      <textarea id="pairingText" readonly aria-label="Pairing data"></textarea>
+      <button id="copy">COPY PAIRING DATA</button>
+      <button id="share" class="secondary">SHARE PAIRING DATA</button>
+      <button id="download" class="secondary">DOWNLOAD PAIRING FILE</button>
+    </section>
+    <div class="small">Open this from the Carbondale Home Screen icon on iPhone. The private sending key never belongs on this page.</div>
+  </main>
 <script>
+const VAPID_PUBLIC_KEY = 'BKMeLu16Zdt-vT8V1YLf5DUVssKPZLxpmBcIaFjx8jOMl3nr5SM-sgjaQtebOHB0cHDZWOpJ5SpqHoo4rEQq9mY';
+const SITE = 'https://carbondaleestate.github.io/carbondale-phone-link/';
+const statusEl = document.getElementById('status');
+const area = document.getElementById('pairingArea');
+const pairingText = document.getElementById('pairingText');
 
-if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("service-worker.js");
+function setStatus(t) { statusEl.textContent = t; }
+function b64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+function pairedJson(sub) {
+  const j = sub.toJSON();
+  return JSON.stringify({
+    version: 'CarbondalePhonePairing/1',
+    site: SITE,
+    endpoint: j.endpoint,
+    p256dh: j.keys.p256dh,
+    auth: j.keys.auth,
+    vapidPublicKey: VAPID_PUBLIC_KEY
+  }, null, 2);
+}
+async function ensureWorker() {
+  if (!('serviceWorker' in navigator)) throw new Error('Service workers are not available here.');
+  await navigator.serviceWorker.register('service-worker.js', {scope:'./'});
+  return navigator.serviceWorker.ready;
+}
+async function pairPhone() {
+  try {
+    setStatus('Preparing Carbondale Phone Link…');
+    const reg = await ensureWorker();
+    if (!('PushManager' in window)) throw new Error('Web Push is not available in this browser context. Open the installed Home Screen app.');
+    let permission = Notification.permission;
+    if (permission !== 'granted') permission = await Notification.requestPermission();
+    if (permission !== 'granted') throw new Error('Notification permission was not granted.');
+
+    setStatus('Creating a fresh secure push subscription…');
+    const old = await reg.pushManager.getSubscription();
+    if (old) await old.unsubscribe();
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: b64ToUint8Array(VAPID_PUBLIC_KEY)
+    });
+    const text = pairedJson(sub);
+    pairingText.value = text;
+    area.classList.remove('hidden');
+    setStatus('PAIRED. Send the pairing data/file back to the PC once. After that, F9 can send a real remote notification to this iPhone.');
+  } catch (e) {
+    setStatus('PAIRING FAILED: ' + (e && e.message ? e.message : e));
+  }
 }
 
-document.getElementById("testButton").addEventListener("click", async () => {
-
-    const permission = await Notification.requestPermission();
-
-    if (permission !== "granted") {
-        alert("Notifications were not allowed.");
-        return;
-    }
-
-    const registration = await navigator.serviceWorker.ready;
-
-    await registration.showNotification(
-        "CARBONDALE",
-        {
-            body: "Estate communication confirmed."
-        }
-    );
-
+document.getElementById('pair').addEventListener('click', pairPhone);
+document.getElementById('copy').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(pairingText.value); setStatus('Pairing data copied. Paste it into this ChatGPT conversation from the iPhone.'); }
+  catch { pairingText.focus(); pairingText.select(); setStatus('Copy was blocked. The pairing text is selected; use Copy from the iPhone menu.'); }
+});
+document.getElementById('share').addEventListener('click', async () => {
+  const text = pairingText.value;
+  try {
+    if (!navigator.share) throw new Error('Share is not available here.');
+    await navigator.share({title:'Carbondale Phone Pairing', text});
+  } catch (e) {
+    setStatus('Share was cancelled or unavailable. COPY PAIRING DATA works too.');
+  }
+});
+document.getElementById('download').addEventListener('click', () => {
+  const blob = new Blob([pairingText.value], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'CarbondalePhonePairing.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  setStatus('Pairing file created. Transfer/upload CarbondalePhonePairing.json to the PC test folder.');
 });
 
+ensureWorker().then(() => {
+  const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+  if (!standalone) setStatus('Open the installed Carbondale Home Screen app, then tap PAIR THIS IPHONE.');
+}).catch(()=>{});
 </script>
-
 </body>
 </html>
