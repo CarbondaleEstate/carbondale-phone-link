@@ -68,10 +68,12 @@
         <button id="copy">COPY PAIRING DATA</button>
       </section>
 
-      <div class="small">v1.0 — request inbox now uses one live stream instead of rapid polling; prevents relay rate-limit lockout.</div>
+      <div class="small">v1.1 — foreground recovery: pending requests refresh locally even after iOS suspends and resumes the app; app updates self-reload.</div>
     </section>
   </main>
 <script>
+const APP_VERSION = '1.1';
+const SW_URL = 'service-worker.js?v=' + APP_VERSION;
 const VAPID_PUBLIC_KEY = 'BKMeLu16Zdt-vT8V1YLf5DUVssKPZLxpmBcIaFjx8jOMl3nr5SM-sgjaQtebOHB0cHDZWOpJ5SpqHoo4rEQq9mY';
 const SITE = 'https://carbondaleestate.github.io/carbondale-phone-link/';
 const REQUEST_TTL_MS = 5 * 60 * 1000;
@@ -96,6 +98,31 @@ const closeWordClockButton = document.getElementById('closeWordClock');
 
 let currentRequest = null;
 let decisionInFlight = false;
+let localRefreshTimer = null;
+let updateReloading = false;
+
+function startLocalPendingRefresh() {
+  if (localRefreshTimer) return;
+  // This checks only this iPhone's IndexedDB. It makes ZERO network requests,
+  // so it cannot trigger relay rate limits. When iOS resumes an old-looking
+  // Home Screen app, the timer resumes too and immediately notices any request
+  // the service worker stored while the phone was locked.
+  localRefreshTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') refreshPendingRequest();
+  }, 750);
+}
+
+function stopLocalPendingRefresh() {
+  if (localRefreshTimer) clearInterval(localRefreshTimer);
+  localRefreshTimer = null;
+}
+
+function reloadForNewAppVersion() {
+  if (updateReloading) return;
+  updateReloading = true;
+  try { sessionStorage.setItem('carbondale-update-reload', String(Date.now())); } catch (_) {}
+  location.reload();
+}
 
 function setStatus(t) { statusEl.textContent = t; }
 
@@ -419,7 +446,7 @@ function pairedJson(sub) {
 
 async function ensureWorker() {
   if (!('serviceWorker' in navigator)) throw new Error('Service workers are not available here.');
-  const reg = await navigator.serviceWorker.register('service-worker.js', { scope:'./', updateViaCache:'none' });
+  const reg = await navigator.serviceWorker.register(SW_URL, { scope:'./', updateViaCache:'none' });
   try { await reg.update(); } catch (_) {}
   await navigator.serviceWorker.ready;
   return navigator.serviceWorker.ready;
@@ -486,23 +513,36 @@ if ('serviceWorker' in navigator) {
       ingestRequestUrl(data.url).catch(() => refreshPendingRequest());
     } else if (data.type === 'carbondale-refresh-request') {
       refreshPendingRequest();
+    } else if (data.type === 'carbondale-app-update' && data.version && data.version !== APP_VERSION) {
+      reloadForNewAppVersion();
     }
+  });
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    // Once v1.1 has been loaded once, later GitHub updates no longer require
+    // force-closing the Home Screen app just to pick up the new page.
+    reloadForNewAppVersion();
   });
 }
 
 window.addEventListener('focus', () => {
   refreshPendingRequest();
+  startLocalPendingRefresh();
   startInboxStream();
 });
 window.addEventListener('pageshow', () => {
   refreshPendingRequest();
+  startLocalPendingRefresh();
   startInboxStream();
 });
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
+    // iOS can freeze a Home Screen web app rather than recreate it. Do not
+    // trust the old screen: reread the request that the service worker stored.
     refreshPendingRequest();
+    startLocalPendingRefresh();
     startInboxStream();
   } else {
+    stopLocalPendingRefresh();
     stopInboxStream();
   }
 });
@@ -512,6 +552,7 @@ document.addEventListener('visibilitychange', () => {
     await ensureWorker();
     const fromUrl = await ingestRequestUrl(location.href);
     if (!fromUrl) await refreshPendingRequest();
+    startLocalPendingRefresh();
     await startInboxStream();
     const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
     if (!standalone && !currentRequest) setStatus('Open this from the installed Carbondale Home Screen icon.');
