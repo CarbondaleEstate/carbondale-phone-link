@@ -1,24 +1,18 @@
-const VERSION = 'carbondale-phone-link-sw-0.3';
+const VERSION = 'carbondale-phone-link-sw-0.4';
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
 
 self.addEventListener('push', event => {
   let data = {};
-
   if (event.data) {
-    try {
-      data = event.data.json();
-    } catch (_) {
-      try {
-        data = { body: event.data.text() };
-      } catch (_) {
-        data = {};
-      }
+    try { data = event.data.json(); }
+    catch (_) {
+      try { data = { body: event.data.text() }; }
+      catch (_) { data = {}; }
     }
   }
 
-  // Declarative Web Push may arrive in the standardized envelope.
   if (data && data.web_push === 8030 && data.notification) {
     const n = data.notification;
     event.waitUntil(self.registration.showNotification(
@@ -40,9 +34,6 @@ self.addEventListener('push', event => {
     renotify: true,
     data: { url: (data && data.url) || '/carbondale-phone-link/' }
   };
-
-  // Deliberately no icon/badge URLs here. This build has no external
-  // notification assets, so notification display cannot fail on a missing file.
   event.waitUntil(self.registration.showNotification(title, options));
 });
 
@@ -50,13 +41,17 @@ self.addEventListener('notificationclick', event => {
   event.notification.close();
   const target = (event.notification.data && event.notification.data.url) || '/carbondale-phone-link/';
   event.waitUntil((async () => {
+    const absolute = new URL(target, self.location.origin).href;
     const list = await clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const client of list) {
+      if ('navigate' in client) {
+        try { await client.navigate(absolute); } catch (_) {}
+      }
       if ('focus' in client) {
         await client.focus();
         return;
       }
     }
-    if (clients.openWindow) await clients.openWindow(target);
+    if (clients.openWindow) await clients.openWindow(absolute);
   })());
 });
