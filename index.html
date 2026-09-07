@@ -68,7 +68,7 @@
         <button id="copy">COPY PAIRING DATA</button>
       </section>
 
-      <div class="small">v0.7 — phone control can close Word Clock even when no keyboard request was made.</div>
+      <div class="small">v1.0 — request inbox now uses one live stream instead of rapid polling; prevents relay rate-limit lockout.</div>
     </section>
   </main>
 <script>
@@ -189,7 +189,7 @@ async function deriveInboxTopic() {
   const j = sub.toJSON();
   if (!j.keys || !j.keys.auth || !j.keys.p256dh) return null;
   const material = 'CarbondaleInbox/1|' + j.keys.auth + '|' + j.keys.p256dh;
-  return 'carbondale-inbox-' + await sha256Hex(material);
+  return 'carbondale-inbox-' + (await sha256Hex(material)).slice(0, 40);
 }
 
 async function deriveControlTopic() {
@@ -200,13 +200,31 @@ async function deriveControlTopic() {
   const j = sub.toJSON();
   if (!j.keys || !j.keys.auth || !j.keys.p256dh) return null;
   const material = 'CarbondaleControl/1|' + j.keys.auth + '|' + j.keys.p256dh;
-  return 'carbondale-control-' + await sha256Hex(material);
+  return 'carbondale-control-' + (await sha256Hex(material)).slice(0, 40);
 }
 
 function randomHex(bytes) {
   const a = new Uint8Array(bytes);
   crypto.getRandomValues(a);
   return Array.from(a, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function publishRelayMessage(topic, message) {
+  // Publish through ntfy's documented JSON root endpoint. This avoids
+  // topic-path routing failures while keeping the exact same private topic.
+  const response = await fetch('https://ntfy.sh/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ topic, message }),
+    credentials: 'omit',
+    cache: 'no-store'
+  });
+  if (!response.ok) {
+    let detail = '';
+    try { detail = (await response.text()).trim(); } catch (_) {}
+    throw new Error('Relay service answered HTTP ' + response.status + (detail ? ': ' + detail : ''));
+  }
+  return response;
 }
 
 async function closeWordClockFromPhone() {
@@ -222,13 +240,7 @@ async function closeWordClockFromPhone() {
       commandID: randomHex(16),
       issuedAt: Date.now()
     };
-    const response = await fetch('https://ntfy.sh/' + topic, {
-      method: 'POST',
-      body: JSON.stringify(command),
-      credentials: 'omit',
-      cache: 'no-store'
-    });
-    if (!response.ok) throw new Error('Control service answered HTTP ' + response.status);
+    await publishRelayMessage(topic, JSON.stringify(command));
     controlStatus.textContent = 'CLOSE COMMAND SENT. If Word Clock is running, it should close now.';
   } catch (e) {
     controlStatus.textContent = 'CLOSE FAILED: ' + (e && e.message ? e.message : e);
@@ -255,27 +267,49 @@ function normalizeInboxRequest(raw) {
   };
 }
 
-async function fetchLatestInboxRequest() {
+let inboxEventSource = null;
+
+async function handleInboxEnvelope(env) {
+  try {
+    if (!env || env.event !== 'message' || typeof env.message !== 'string') return;
+    const req = normalizeInboxRequest(JSON.parse(env.message));
+    if (!req) return;
+    const consumed = await dbGet(CONSUMED_KEY).catch(() => null);
+    if (req.requestID === consumed) return;
+    if (!requestIsFresh(req)) return;
+    await dbPut(PENDING_KEY, req);
+    if (!currentRequest || currentRequest.requestID !== req.requestID) showRequest(req);
+  } catch (_) { }
+}
+
+async function startInboxStream() {
+  if (document.visibilityState !== 'visible') return;
+  if (inboxEventSource && inboxEventSource.readyState !== EventSource.CLOSED) return;
   const topic = await deriveInboxTopic();
-  if (!topic) return null;
-  const response = await fetch('https://ntfy.sh/' + topic + '/json?poll=1&since=latest', {
-    method: 'GET', credentials: 'omit', cache: 'no-store'
-  });
-  if (!response.ok) throw new Error('Phone inbox answered HTTP ' + response.status);
-  const text = await response.text();
-  let latest = null;
-  for (const line of text.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    try {
-      const env = JSON.parse(trimmed);
-      if (env.event !== 'message' || typeof env.message !== 'string') continue;
-      const req = normalizeInboxRequest(JSON.parse(env.message));
-      if (!req) continue;
-      if (!latest || req.receivedAt > latest.receivedAt) latest = req;
-    } catch (_) { }
+  if (!topic) return;
+  if (inboxEventSource) {
+    try { inboxEventSource.close(); } catch (_) { }
+    inboxEventSource = null;
   }
-  return latest;
+  // One long-lived SSE connection gives us both the newest cached request and
+  // future requests. This replaces the old rapid polling loop that exhausted
+  // the relay's request bucket.
+  const es = new EventSource('https://ntfy.sh/' + topic + '/sse?since=latest');
+  inboxEventSource = es;
+  es.onmessage = event => {
+    try { handleInboxEnvelope(JSON.parse(event.data)); } catch (_) { }
+  };
+  es.onerror = () => {
+    // EventSource reconnects automatically. Do not hammer the relay with our
+    // own retry timer; the browser owns reconnect backoff.
+  };
+}
+
+function stopInboxStream() {
+  if (inboxEventSource) {
+    try { inboxEventSource.close(); } catch (_) { }
+    inboxEventSource = null;
+  }
 }
 
 function showIdle(message) {
@@ -320,25 +354,6 @@ async function refreshPendingRequest() {
   try {
     const consumed = await dbGet(CONSUMED_KEY).catch(() => null);
 
-    // The retained Carbondale inbox is the source of truth. This is what makes a
-    // request discoverable when the user ignores the notification and simply
-    // opens the Carbondale Home Screen app later.
-    let inboxReq = null;
-    try { inboxReq = await fetchLatestInboxRequest(); } catch (_) { }
-    if (inboxReq) {
-      if (inboxReq.requestID === consumed) {
-        await dbDelete(PENDING_KEY).catch(() => {});
-        if (!currentRequest || currentRequest.requestID === inboxReq.requestID)
-          showIdle('READY FOR NEXT REQUEST.');
-        return;
-      }
-      if (requestIsFresh(inboxReq)) {
-        await dbPut(PENDING_KEY, inboxReq);
-        if (!currentRequest || currentRequest.requestID !== inboxReq.requestID) showRequest(inboxReq);
-        return;
-      }
-    }
-
     const req = await dbGet(PENDING_KEY);
     if (!req) {
       if (!currentRequest) showIdle('READY FOR NEXT REQUEST.');
@@ -363,13 +378,7 @@ async function sendDecision(decision) {
   denyButton.disabled = true;
   approvalStatus.textContent = decision === 'APPROVE' ? 'Sending approval back to the PC…' : 'Sending denial back to the PC…';
   try {
-    const response = await fetch('https://ntfy.sh/' + req.relayTopic, {
-      method: 'POST',
-      body: decision + '|' + req.requestID,
-      credentials: 'omit',
-      cache: 'no-store'
-    });
-    if (!response.ok) throw new Error('Return service answered HTTP ' + response.status);
+    await publishRelayMessage(req.relayTopic, decision + '|' + req.requestID);
     await dbPut(CONSUMED_KEY, req.requestID);
     await dbDelete(PENDING_KEY);
     currentRequest = null;
@@ -481,24 +490,29 @@ if ('serviceWorker' in navigator) {
   });
 }
 
-window.addEventListener('focus', refreshPendingRequest);
-window.addEventListener('pageshow', refreshPendingRequest);
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') refreshPendingRequest();
+window.addEventListener('focus', () => {
+  refreshPendingRequest();
+  startInboxStream();
 });
-
-// While Carbondale is visibly open, keep looking for a new request. iOS may
-// suspend this timer in the background; focus/pageshow/visibilitychange catch up
-// immediately when the app becomes visible again.
-setInterval(() => {
-  if (document.visibilityState === 'visible') refreshPendingRequest();
-}, 3000);
+window.addEventListener('pageshow', () => {
+  refreshPendingRequest();
+  startInboxStream();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    refreshPendingRequest();
+    startInboxStream();
+  } else {
+    stopInboxStream();
+  }
+});
 
 (async () => {
   try {
     await ensureWorker();
     const fromUrl = await ingestRequestUrl(location.href);
     if (!fromUrl) await refreshPendingRequest();
+    await startInboxStream();
     const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
     if (!standalone && !currentRequest) setStatus('Open this from the installed Carbondale Home Screen icon.');
   } catch (e) {
