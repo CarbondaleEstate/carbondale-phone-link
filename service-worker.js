@@ -1,11 +1,25 @@
-const VERSION = 'carbondale-phone-link-sw-0.9';
+const VERSION = '1.1';
 const DB_NAME = 'carbondale-phone-link';
 const DB_VERSION = 1;
 const STORE = 'state';
 const PENDING_KEY = 'pending-request';
 
 self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
+self.addEventListener('activate', event => event.waitUntil((async () => {
+  await self.clients.claim();
+  const list = await clients.matchAll({ type:'window', includeUncontrolled:true });
+  for (const client of list) {
+    try { client.postMessage({ type:'carbondale-app-update', version:VERSION }); } catch (_) {}
+  }
+})()));
+
+// Never serve a stale application shell from a service-worker cache. GitHub
+// Pages remains the source of truth; navigation requests go to the network.
+self.addEventListener('fetch', event => {
+  if (event.request.mode === 'navigate') {
+    event.respondWith(fetch(new Request(event.request, { cache:'reload' })));
+  }
+});
 
 function openDb() {
   return new Promise((resolve, reject) => {
