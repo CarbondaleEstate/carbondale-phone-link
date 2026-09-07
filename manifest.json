@@ -1,0 +1,9 @@
+{
+  "name": "Carbondale Phone Link",
+  "short_name": "Carbondale",
+  "start_url": "/carbondale-phone-link/",
+  "scope": "/carbondale-phone-link/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#B5121B"
+}
