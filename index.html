@@ -3,20 +3,94 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
     <title>Carbondale Phone Link</title>
+
+    <link rel="manifest" href="manifest.json">
+
+    <meta name="theme-color" content="#000000">
+
+    <style>
+        body {
+            margin: 0;
+            background: #000000;
+            color: #B5121B;
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 70px 20px;
+        }
+
+        .panel {
+            max-width: 420px;
+            margin: auto;
+            padding: 35px;
+            border: 2px solid #B5121B;
+            border-radius: 24px;
+        }
+
+        h1 {
+            margin-bottom: 5px;
+        }
+
+        h2 {
+            margin-top: 0;
+        }
+
+        button {
+            margin-top: 25px;
+            padding: 15px 22px;
+            background: #000000;
+            color: #B5121B;
+            border: 2px solid #B5121B;
+            border-radius: 12px;
+            font-size: 17px;
+            font-weight: bold;
+        }
+    </style>
 </head>
 
-<body style="background:#000000; color:#B5121B; font-family:Arial,sans-serif; text-align:center; padding-top:80px;">
+<body>
+
+<div class="panel">
 
     <h1>CARBONDALE</h1>
-
     <h2>PHONE LINK</h2>
 
     <p>Carbondale Estate phone connection test.</p>
 
-    <button style="padding:14px 24px; font-size:18px;">
-        PHONE LINK TEST
+    <button id="testButton">
+        ENABLE & TEST NOTIFICATION
     </button>
+
+</div>
+
+<script>
+
+if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("service-worker.js");
+}
+
+document.getElementById("testButton").addEventListener("click", async () => {
+
+    const permission = await Notification.requestPermission();
+
+    if (permission !== "granted") {
+        alert("Notifications were not allowed.");
+        return;
+    }
+
+    const registration = await navigator.serviceWorker.ready;
+
+    await registration.showNotification(
+        "CARBONDALE",
+        {
+            body: "Estate communication confirmed."
+        }
+    );
+
+});
+
+</script>
 
 </body>
 </html>
