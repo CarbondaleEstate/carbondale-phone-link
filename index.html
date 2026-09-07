@@ -7,47 +7,119 @@
   <link rel="manifest" href="manifest.json">
   <title>Carbondale Phone Link</title>
   <style>
-    :root { --red:#B5121B; }
+    :root { --red:#B5121B; --dim:#650A10; --deep:#260306; }
     * { box-sizing:border-box; }
     html,body { min-height:100%; margin:0; background:#000; color:var(--red); font-family:Arial,Helvetica,sans-serif; }
     body { display:flex; align-items:center; justify-content:center; padding:28px; }
     .shell { width:min(620px,100%); border:1px solid var(--red); border-radius:24px; background:#030303; padding:26px; }
     .brand { font-size:12px; letter-spacing:.34em; opacity:.78; }
     h1 { margin:12px 0 8px; font-size:31px; font-weight:600; }
+    h2 { margin:22px 0 8px; font-size:22px; font-weight:600; }
     p { margin:0 0 18px; line-height:1.45; color:#a60f18; }
     .status { min-height:50px; border:1px solid #3d0509; border-radius:15px; padding:14px; background:#050505; margin:18px 0; line-height:1.4; }
     button { width:100%; border:1px solid var(--red); border-radius:14px; background:#000; color:var(--red); font-weight:700; padding:15px 14px; margin-top:10px; font-size:14px; }
     button:active { background:#140103; }
+    button:disabled { opacity:.38; }
     .secondary { border-color:#64090e; color:#8e0d14; }
+    .deny { border-color:#4b070b; color:#770b11; }
     textarea { width:100%; min-height:155px; margin-top:12px; border:1px solid #3d0509; border-radius:12px; background:#000; color:#7f0b11; padding:12px; font-family:Consolas,monospace; font-size:11px; resize:vertical; }
     .small { font-size:12px; opacity:.72; margin-top:14px; }
+    .request { border:1px solid var(--deep); border-radius:18px; padding:18px; margin-top:18px; background:#020202; }
+    .request-label { font-size:12px; letter-spacing:.18em; opacity:.7; }
     .hidden { display:none; }
   </style>
 </head>
 <body>
   <main class="shell">
     <div class="brand">CARBONDALE</div>
-    <h1>Phone Link</h1>
-    <p>Phone-side diagnostic and pairing. No SMS and no phone number are used.</p>
-    <div id="status" class="status">Preparing phone-side test…</div>
 
-    <button id="localTest">TEST NOTIFICATION ON THIS IPHONE</button>
-    <button id="pair" class="secondary">PAIR / REPAIR THIS IPHONE</button>
-
-    <section id="pairingArea" class="hidden">
-      <textarea id="pairingText" readonly aria-label="Pairing data"></textarea>
-      <button id="copy">COPY PAIRING DATA</button>
+    <section id="approvalMode" class="hidden">
+      <h1>Word Clock</h1>
+      <div class="request">
+        <div class="request-label">ACCESS REQUESTED</div>
+        <h2>Allow Word Clock to close?</h2>
+        <p>This is the temporary return-path test. Face ID comes after this round trip works.</p>
+        <button id="approve">APPROVE</button>
+        <button id="deny" class="deny">DENY</button>
+      </div>
+      <div id="approvalStatus" class="status">Waiting for your decision.</div>
+      <div class="small">No SMS. No phone number. This request expires automatically.</div>
     </section>
 
-    <div class="small">v0.3 — The first button tests the iPhone itself. It does not use the PC or remote push.</div>
+    <section id="normalMode">
+      <h1>Phone Link</h1>
+      <p>Phone-side diagnostic and pairing. No SMS and no phone number are used.</p>
+      <div id="status" class="status">Preparing phone-side test…</div>
+
+      <button id="localTest">TEST NOTIFICATION ON THIS IPHONE</button>
+      <button id="pair" class="secondary">PAIR / REPAIR THIS IPHONE</button>
+
+      <section id="pairingArea" class="hidden">
+        <textarea id="pairingText" readonly aria-label="Pairing data"></textarea>
+        <button id="copy">COPY PAIRING DATA</button>
+      </section>
+
+      <div class="small">v0.4 — Adds the temporary APPROVE / DENY return path for Word Clock.</div>
+    </section>
   </main>
 <script>
 const VAPID_PUBLIC_KEY = 'BKMeLu16Zdt-vT8V1YLf5DUVssKPZLxpmBcIaFjx8jOMl3nr5SM-sgjaQtebOHB0cHDZWOpJ5SpqHoo4rEQq9mY';
 const SITE = 'https://carbondaleestate.github.io/carbondale-phone-link/';
+
+const params = new URLSearchParams(location.search);
+const requestID = params.get('request') || '';
+const relayTopic = params.get('topic') || '';
+const requestApp = params.get('app') || 'Word Clock';
+const validRequest = /^[a-f0-9]{32}$/.test(requestID) && /^carbondale-[a-f0-9]{48}$/.test(relayTopic);
+
+const normalMode = document.getElementById('normalMode');
+const approvalMode = document.getElementById('approvalMode');
+const approvalStatus = document.getElementById('approvalStatus');
+const approveButton = document.getElementById('approve');
+const denyButton = document.getElementById('deny');
+
+if (requestID || relayTopic) {
+  normalMode.classList.add('hidden');
+  approvalMode.classList.remove('hidden');
+  document.querySelector('#approvalMode h1').textContent = requestApp;
+  // Keep the temporary relay secret out of the visible browser history after we have read it.
+  try { history.replaceState({}, '', './'); } catch (_) {}
+  if (!validRequest) {
+    approvalStatus.textContent = 'This approval request is incomplete or expired.';
+    approveButton.disabled = true;
+    denyButton.disabled = true;
+  }
+}
+
+async function sendDecision(decision) {
+  if (!validRequest) return;
+  approveButton.disabled = true;
+  denyButton.disabled = true;
+  approvalStatus.textContent = decision === 'APPROVE' ? 'Sending approval back to the PC…' : 'Sending denial back to the PC…';
+  try {
+    const response = await fetch('https://ntfy.sh/' + relayTopic, {
+      method: 'POST',
+      body: decision + '|' + requestID,
+      credentials: 'omit',
+      cache: 'no-store'
+    });
+    if (!response.ok) throw new Error('Return service answered HTTP ' + response.status);
+    approvalStatus.textContent = decision === 'APPROVE'
+      ? 'APPROVED. The Word Clock should close on the PC now.'
+      : 'DENIED. The Word Clock will stay on.';
+  } catch (e) {
+    approvalStatus.textContent = 'RETURN FAILED: ' + (e && e.message ? e.message : e);
+    approveButton.disabled = false;
+    denyButton.disabled = false;
+  }
+}
+
+approveButton.addEventListener('click', () => sendDecision('APPROVE'));
+denyButton.addEventListener('click', () => sendDecision('DENY'));
+
 const statusEl = document.getElementById('status');
 const area = document.getElementById('pairingArea');
 const pairingText = document.getElementById('pairingText');
-
 function setStatus(t) { statusEl.textContent = t; }
 function b64ToUint8Array(base64String) {
   const padding = '='.repeat((4 - base64String.length % 4) % 4);
@@ -78,7 +150,6 @@ async function ensurePermission() {
   if (p !== 'granted') p = await Notification.requestPermission();
   if (p !== 'granted') throw new Error('Notification permission is not granted.');
 }
-
 async function localTest() {
   try {
     setStatus('Testing notification display on this iPhone…');
@@ -88,14 +159,13 @@ async function localTest() {
       body: 'Phone-side notification test passed.',
       tag: 'carbondale-local-test',
       renotify: true,
-      data: { url: '/carbondale-phone-link/' }
+      data: { url: SITE }
     });
     setStatus('LOCAL TEST SENT. You should see a CARBONDALE notification on this iPhone now.');
   } catch (e) {
     setStatus('LOCAL TEST FAILED: ' + (e && e.message ? e.message : e));
   }
 }
-
 async function pairPhone() {
   try {
     setStatus('Preparing a fresh push subscription…');
@@ -128,11 +198,13 @@ document.getElementById('copy').addEventListener('click', async () => {
   }
 });
 
-ensureWorker().then(() => {
-  const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
-  if (!standalone) setStatus('Open this from the installed Carbondale Home Screen icon.');
-  else setStatus('READY. First tap TEST NOTIFICATION ON THIS IPHONE.');
-}).catch(e => setStatus('SETUP FAILED: ' + e.message));
+if (!validRequest) {
+  ensureWorker().then(() => {
+    const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    if (!standalone) setStatus('Open this from the installed Carbondale Home Screen icon.');
+    else setStatus('READY.');
+  }).catch(e => setStatus('SETUP FAILED: ' + e.message));
+}
 </script>
 </body>
 </html>
