@@ -75,7 +75,7 @@
         <button id="copy">COPY PAIRING DATA</button>
       </section>
 
-      <div class="small">v1.4 — Face ID reset: stale passkey state is discarded, enrollment is forced fresh, and Apple may discover the Carbondale credential without an obsolete local transport hint.</div>
+      <div class="small">v1.5 — Exact-passkey targeting: Carbondale now requests the one saved Carbondale credential directly instead of asking Apple to choose among passkeys.</div>
     </section>
   </main>
 <script>
@@ -381,19 +381,22 @@ async function requireFaceId(actionLabel) {
     return true;
   }
 
-  // Ask Apple for a discoverable Carbondale passkey for this exact RP.
-  // Do not constrain the request with the stale transport/credential hint that
-  // caused iOS to say there were no matching passkeys even when our local
-  // bookkeeping claimed one existed.
+  // Target the exact Carbondale credential that was enrolled on this iPhone.
+  // Supplying a single allowCredentials entry prevents Carbondale from asking
+  // Apple to discover/choose among unrelated passkeys. iOS still owns any
+  // system authentication sheet it considers necessary.
+  const credentialId = b64ToUint8Array(encoded);
   let assertion;
   try {
     assertion = await navigator.credentials.get({
       publicKey: {
         challenge: newChallenge(),
         rpId: location.hostname,
+        allowCredentials: [{ type: 'public-key', id: credentialId }],
         userVerification: 'required',
         timeout: 60000
-      }
+      },
+      mediation: 'required'
     });
   } catch (e) {
     if (e && (e.name === 'NotAllowedError' || e.name === 'InvalidStateError')) {
