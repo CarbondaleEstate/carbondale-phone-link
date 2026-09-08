@@ -60,6 +60,13 @@
       <p>Carbondale-wide phone authorization link. Ready to receive the next request from any Carbondale application.</p>
       <div id="status" class="status">Preparing…</div>
 
+      <section class="request" id="faceIdPanel">
+        <div class="request-label">FACE ID</div>
+        <p style="margin-top:10px">Set up Face ID once on this iPhone. After that, APPROVE and CLOSE WORD CLOCK require Apple user verification before Carbondale sends the command.</p>
+        <button id="setupFaceId">SET UP FACE ID</button>
+        <div id="faceIdStatus" class="status">Checking Face ID…</div>
+      </section>
+
       <button id="localTest">TEST NOTIFICATION ON THIS IPHONE</button>
       <button id="pair" class="secondary">PAIR / REPAIR THIS IPHONE</button>
 
@@ -68,11 +75,11 @@
         <button id="copy">COPY PAIRING DATA</button>
       </section>
 
-      <div class="small">v1.1 — foreground recovery: pending requests refresh locally even after iOS suspends and resumes the app; app updates self-reload.</div>
+      <div class="small">v1.2 — Face ID gate: APPROVE and direct Word Clock close require Apple platform user verification before the command is sent.</div>
     </section>
   </main>
 <script>
-const APP_VERSION = '1.1';
+const APP_VERSION = '1.2';
 const SW_URL = 'service-worker.js?v=' + APP_VERSION;
 const VAPID_PUBLIC_KEY = 'BKMeLu16Zdt-vT8V1YLf5DUVssKPZLxpmBcIaFjx8jOMl3nr5SM-sgjaQtebOHB0cHDZWOpJ5SpqHoo4rEQq9mY';
 const SITE = 'https://carbondaleestate.github.io/carbondale-phone-link/';
@@ -95,6 +102,10 @@ const area = document.getElementById('pairingArea');
 const pairingText = document.getElementById('pairingText');
 const controlStatus = document.getElementById('controlStatus');
 const closeWordClockButton = document.getElementById('closeWordClock');
+const setupFaceIdButton = document.getElementById('setupFaceId');
+const faceIdStatus = document.getElementById('faceIdStatus');
+const FACE_ID_CREDENTIAL_KEY = 'carbondale-faceid-credential-id-v1';
+const FACE_ID_USER_KEY = 'carbondale-faceid-user-id-v1';
 
 let currentRequest = null;
 let decisionInFlight = false;
@@ -236,6 +247,104 @@ function randomHex(bytes) {
   return Array.from(a, b => b.toString(16).padStart(2, '0')).join('');
 }
 
+function uint8ToB64url(bytes) {
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function newChallenge() {
+  const c = new Uint8Array(32);
+  crypto.getRandomValues(c);
+  return c;
+}
+
+async function platformAuthenticatorAvailable() {
+  try {
+    return !!(window.PublicKeyCredential &&
+      PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable &&
+      await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable());
+  } catch (_) { return false; }
+}
+
+async function updateFaceIdUi() {
+  const supported = await platformAuthenticatorAvailable();
+  if (!supported) {
+    faceIdStatus.textContent = 'Face ID web authentication is not available in this Carbondale app.';
+    setupFaceIdButton.disabled = true;
+    return;
+  }
+  const id = localStorage.getItem(FACE_ID_CREDENTIAL_KEY);
+  if (id) {
+    faceIdStatus.textContent = 'FACE ID READY on this iPhone.';
+    setupFaceIdButton.textContent = 'RESET FACE ID';
+  } else {
+    faceIdStatus.textContent = 'Face ID has not been set up for Carbondale yet.';
+    setupFaceIdButton.textContent = 'SET UP FACE ID';
+  }
+}
+
+async function setupFaceId() {
+  setupFaceIdButton.disabled = true;
+  faceIdStatus.textContent = 'Waiting for Apple Face ID setup…';
+  try {
+    if (!(await platformAuthenticatorAvailable())) throw new Error('Face ID web authentication is unavailable here.');
+    let userId = localStorage.getItem(FACE_ID_USER_KEY);
+    if (!userId) {
+      const rawUser = new Uint8Array(32);
+      crypto.getRandomValues(rawUser);
+      userId = uint8ToB64url(rawUser);
+      localStorage.setItem(FACE_ID_USER_KEY, userId);
+    }
+    const cred = await navigator.credentials.create({
+      publicKey: {
+        challenge: newChallenge(),
+        rp: { name: 'Carbondale', id: location.hostname },
+        user: {
+          id: b64ToUint8Array(userId),
+          name: 'Carbondale Owner',
+          displayName: 'Carbondale Owner'
+        },
+        pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
+        timeout: 60000,
+        attestation: 'none',
+        authenticatorSelection: {
+          authenticatorAttachment: 'platform',
+          residentKey: 'required',
+          userVerification: 'required'
+        }
+      }
+    });
+    if (!cred || !cred.rawId) throw new Error('Apple did not return a Carbondale credential.');
+    localStorage.setItem(FACE_ID_CREDENTIAL_KEY, uint8ToB64url(new Uint8Array(cred.rawId)));
+    faceIdStatus.textContent = 'FACE ID READY. Carbondale approvals now require verification.';
+    setupFaceIdButton.textContent = 'RESET FACE ID';
+  } catch (e) {
+    faceIdStatus.textContent = 'FACE ID SETUP FAILED: ' + (e && e.message ? e.message : e);
+  } finally {
+    setupFaceIdButton.disabled = false;
+  }
+}
+
+async function requireFaceId(actionLabel) {
+  const encoded = localStorage.getItem(FACE_ID_CREDENTIAL_KEY);
+  if (!encoded) throw new Error('Face ID is not set up for Carbondale on this iPhone.');
+  const expected = b64ToUint8Array(encoded);
+  const assertion = await navigator.credentials.get({
+    publicKey: {
+      challenge: newChallenge(),
+      rpId: location.hostname,
+      allowCredentials: [{ type: 'public-key', id: expected, transports: ['internal'] }],
+      userVerification: 'required',
+      timeout: 60000
+    }
+  });
+  if (!assertion || !assertion.rawId) throw new Error('Face ID verification did not complete.');
+  const actual = uint8ToB64url(new Uint8Array(assertion.rawId));
+  if (actual !== encoded) throw new Error('The wrong Carbondale credential answered.');
+  return true;
+}
+
 async function publishRelayMessage(topic, message) {
   // Publish through ntfy's documented JSON root endpoint. This avoids
   // topic-path routing failures while keeping the exact same private topic.
@@ -258,6 +367,9 @@ async function closeWordClockFromPhone() {
   closeWordClockButton.disabled = true;
   controlStatus.textContent = 'Sending close command to Word Clock…';
   try {
+    controlStatus.textContent = 'Face ID required…';
+    await requireFaceId('Close Word Clock');
+    controlStatus.textContent = 'Face ID verified. Sending close command…';
     const topic = await deriveControlTopic();
     if (!topic) throw new Error('This iPhone is not currently paired.');
     const command = {
@@ -405,6 +517,11 @@ async function sendDecision(decision) {
   denyButton.disabled = true;
   approvalStatus.textContent = decision === 'APPROVE' ? 'Sending approval back to the PC…' : 'Sending denial back to the PC…';
   try {
+    if (decision === 'APPROVE') {
+      approvalStatus.textContent = 'Face ID required…';
+      await requireFaceId('Approve Carbondale request');
+      approvalStatus.textContent = 'Face ID verified. Sending approval back to the PC…';
+    }
     await publishRelayMessage(req.relayTopic, decision + '|' + req.requestID);
     await dbPut(CONSUMED_KEY, req.requestID);
     await dbDelete(PENDING_KEY);
@@ -424,6 +541,7 @@ async function sendDecision(decision) {
 approveButton.addEventListener('click', () => sendDecision('APPROVE'));
 denyButton.addEventListener('click', () => sendDecision('DENY'));
 closeWordClockButton.addEventListener('click', closeWordClockFromPhone);
+setupFaceIdButton.addEventListener('click', setupFaceId);
 
 function b64ToUint8Array(base64String) {
   const padding = '='.repeat((4 - base64String.length % 4) % 4);
@@ -518,7 +636,7 @@ if ('serviceWorker' in navigator) {
     }
   });
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    // Once v1.1 has been loaded once, later GitHub updates no longer require
+    // Once v1.2 has been loaded once, later GitHub updates no longer require
     // force-closing the Home Screen app just to pick up the new page.
     reloadForNewAppVersion();
   });
@@ -550,6 +668,7 @@ document.addEventListener('visibilitychange', () => {
 (async () => {
   try {
     await ensureWorker();
+    await updateFaceIdUi();
     const fromUrl = await ingestRequestUrl(location.href);
     if (!fromUrl) await refreshPendingRequest();
     startLocalPendingRefresh();
