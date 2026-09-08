@@ -75,11 +75,11 @@
         <button id="copy">COPY PAIRING DATA</button>
       </section>
 
-      <div class="small">v1.5 — Exact-passkey targeting: Carbondale now requests the one saved Carbondale credential directly instead of asking Apple to choose among passkeys.</div>
+      <div class="small">v1.6 — Passkey identity label: the existing Carbondale passkey is preserved and its Apple Passwords label is synchronized to “Carbondale Owner, Dennis Michael Tiffany” after successful authentication.</div>
     </section>
   </main>
 <script>
-const APP_VERSION = '1.4';
+const APP_VERSION = '1.6';
 const SW_URL = 'service-worker.js?v=' + APP_VERSION;
 const VAPID_PUBLIC_KEY = 'BKMeLu16Zdt-vT8V1YLf5DUVssKPZLxpmBcIaFjx8jOMl3nr5SM-sgjaQtebOHB0cHDZWOpJ5SpqHoo4rEQq9mY';
 const SITE = 'https://carbondaleestate.github.io/carbondale-phone-link/';
@@ -321,8 +321,8 @@ function beginFaceIdEnrollment() {
       rp: { name: 'Carbondale', id: location.hostname },
       user: {
         id: b64ToUint8Array(userId),
-        name: 'Carbondale Owner',
-        displayName: 'Carbondale Owner'
+        name: 'Carbondale Owner, Dennis Michael Tiffany',
+        displayName: 'Carbondale Owner, Dennis Michael Tiffany'
       },
       pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
       timeout: 60000,
@@ -406,6 +406,23 @@ async function requireFaceId(actionLabel) {
     throw e;
   }
   if (!assertion || !assertion.rawId) throw new Error('Face ID verification did not complete.');
+
+  // Safari 19+/iOS 26+ can update the human-readable account label stored
+  // with an existing passkey without deleting or re-enrolling it. Do this
+  // only after a successful assertion, when the user is authenticated.
+  try {
+    if (window.PublicKeyCredential && typeof PublicKeyCredential.signalCurrentUserDetails === 'function') {
+      await PublicKeyCredential.signalCurrentUserDetails({
+        rpId: location.hostname,
+        userId: getOrCreateFaceIdUserId(),
+        name: 'Carbondale Owner, Dennis Michael Tiffany',
+        displayName: 'Carbondale Owner, Dennis Michael Tiffany'
+      });
+    }
+  } catch (_) {
+    // Label synchronization is cosmetic and must never block authorization.
+  }
+
   const actual = uint8ToB64url(new Uint8Array(assertion.rawId));
   if (actual !== encoded) {
     try { localStorage.removeItem(FACE_ID_CREDENTIAL_KEY); } catch (_) {}
