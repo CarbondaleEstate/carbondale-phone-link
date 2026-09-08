@@ -75,11 +75,11 @@
         <button id="copy">COPY PAIRING DATA</button>
       </section>
 
-      <div class="small">v1.3 — Face ID fix: WebAuthn now starts directly from the button tap, and first approval can enroll Face ID automatically.</div>
+      <div class="small">v1.4 — Face ID reset: stale passkey state is discarded, enrollment is forced fresh, and Apple may discover the Carbondale credential without an obsolete local transport hint.</div>
     </section>
   </main>
 <script>
-const APP_VERSION = '1.3';
+const APP_VERSION = '1.4';
 const SW_URL = 'service-worker.js?v=' + APP_VERSION;
 const VAPID_PUBLIC_KEY = 'BKMeLu16Zdt-vT8V1YLf5DUVssKPZLxpmBcIaFjx8jOMl3nr5SM-sgjaQtebOHB0cHDZWOpJ5SpqHoo4rEQq9mY';
 const SITE = 'https://carbondaleestate.github.io/carbondale-phone-link/';
@@ -104,13 +104,19 @@ const controlStatus = document.getElementById('controlStatus');
 const closeWordClockButton = document.getElementById('closeWordClock');
 const setupFaceIdButton = document.getElementById('setupFaceId');
 const faceIdStatus = document.getElementById('faceIdStatus');
-const FACE_ID_CREDENTIAL_KEY = 'carbondale-faceid-credential-id-v1';
-const FACE_ID_USER_KEY = 'carbondale-faceid-user-id-v1';
+const FACE_ID_CREDENTIAL_KEY = 'carbondale-faceid-credential-id-v2';
+const FACE_ID_USER_KEY = 'carbondale-faceid-user-id-v2';
 
 let currentRequest = null;
 let decisionInFlight = false;
 let localRefreshTimer = null;
 let updateReloading = false;
+
+// v1.4 deliberately ignores/removes the broken v1 Face ID bookkeeping.
+try {
+  localStorage.removeItem('carbondale-faceid-credential-id-v1');
+  localStorage.removeItem('carbondale-faceid-user-id-v1');
+} catch (_) {}
 
 function startLocalPendingRefresh() {
   if (localRefreshTimer) return;
@@ -318,12 +324,13 @@ function beginFaceIdEnrollment() {
         name: 'Carbondale Owner',
         displayName: 'Carbondale Owner'
       },
-      pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
       timeout: 60000,
       attestation: 'none',
       authenticatorSelection: {
         authenticatorAttachment: 'platform',
-        residentKey: 'preferred',
+        residentKey: 'required',
+        requireResidentKey: true,
         userVerification: 'required'
       }
     }
@@ -374,21 +381,33 @@ async function requireFaceId(actionLabel) {
     return true;
   }
 
-  const expected = b64ToUint8Array(encoded);
-  // As with enrollment, invoke get() before any unrelated await so WebKit sees
-  // this as part of the user's APPROVE/CLOSE tap.
-  const assertion = await navigator.credentials.get({
-    publicKey: {
-      challenge: newChallenge(),
-      rpId: location.hostname,
-      allowCredentials: [{ type: 'public-key', id: expected, transports: ['internal'] }],
-      userVerification: 'required',
-      timeout: 60000
+  // Ask Apple for a discoverable Carbondale passkey for this exact RP.
+  // Do not constrain the request with the stale transport/credential hint that
+  // caused iOS to say there were no matching passkeys even when our local
+  // bookkeeping claimed one existed.
+  let assertion;
+  try {
+    assertion = await navigator.credentials.get({
+      publicKey: {
+        challenge: newChallenge(),
+        rpId: location.hostname,
+        userVerification: 'required',
+        timeout: 60000
+      }
+    });
+  } catch (e) {
+    if (e && (e.name === 'NotAllowedError' || e.name === 'InvalidStateError')) {
+      try { localStorage.removeItem(FACE_ID_CREDENTIAL_KEY); } catch (_) {}
+      faceIdStatus.textContent = 'The saved Carbondale Face ID credential was not available. Tap APPROVE again to create a fresh one.';
     }
-  });
+    throw e;
+  }
   if (!assertion || !assertion.rawId) throw new Error('Face ID verification did not complete.');
   const actual = uint8ToB64url(new Uint8Array(assertion.rawId));
-  if (actual !== encoded) throw new Error('The wrong Carbondale credential answered.');
+  if (actual !== encoded) {
+    try { localStorage.removeItem(FACE_ID_CREDENTIAL_KEY); } catch (_) {}
+    throw new Error('Apple returned a different Carbondale credential. Tap APPROVE again to re-enroll.');
+  }
   return true;
 }
 
