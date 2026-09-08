@@ -1,4 +1,4 @@
-const VERSION = '1.7';
+const VERSION = '1.8';
 const DB_NAME = 'carbondale-phone-link';
 const DB_VERSION = 1;
 const STORE = 'state';
