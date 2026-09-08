@@ -75,11 +75,11 @@
         <button id="copy">COPY PAIRING DATA</button>
       </section>
 
-      <div class="small">v1.7 — UNLOCK COMPUTER is the single computer-unlock command. It works from Word Clock or the Windows lock screen; no PC keyboard or mouse step is part of the flow.</div>
+      <div class="small">v1.8 — UNLOCK COMPUTER now exits Word Clock first, then sends the Windows unlock command. No PC keyboard or mouse step is part of the flow.</div>
     </section>
   </main>
 <script>
-const APP_VERSION = '1.7';
+const APP_VERSION = '1.8';
 const SW_URL = 'service-worker.js?v=' + APP_VERSION;
 const VAPID_PUBLIC_KEY = 'BKMeLu16Zdt-vT8V1YLf5DUVssKPZLxpmBcIaFjx8jOMl3nr5SM-sgjaQtebOHB0cHDZWOpJ5SpqHoo4rEQq9mY';
 const SITE = 'https://carbondaleestate.github.io/carbondale-phone-link/';
@@ -455,18 +455,38 @@ async function unlockComputerFromPhone() {
   try {
     controlStatus.textContent = 'Face ID required…';
     await requireFaceId('Unlock Computer');
-    controlStatus.textContent = 'Face ID verified. Sending unlock command…';
     const topic = await deriveControlTopic();
     if (!topic) throw new Error('This iPhone is not currently paired.');
-    const command = {
+
+    // Reuse the already-proven Word Clock remote-close path first. The active
+    // .SCR receives this command itself and exits normally before Windows
+    // authentication is requested. This avoids trying to inject keyboard input
+    // or kill the screensaver from a different desktop/session.
+    controlStatus.textContent = 'Face ID verified. Exiting Word Clock…';
+    const closeCommand = {
+      version: 'CarbondaleControl/1',
+      type: 'control-command',
+      command: 'close-word-clock',
+      commandID: randomHex(16),
+      issuedAt: Date.now()
+    };
+    await publishRelayMessage(topic, JSON.stringify(closeCommand));
+
+    // Give the screensaver a short, bounded head start to close itself before
+    // firing the existing unlock command. If Word Clock is not running, the
+    // delay is harmless and the normal Windows-lock-screen path still works.
+    await new Promise(resolve => setTimeout(resolve, 900));
+
+    controlStatus.textContent = 'Word Clock exit sent. Sending unlock command…';
+    const unlockCommand = {
       version: 'CarbondaleControl/1',
       type: 'control-command',
       command: 'unlock-computer',
       commandID: randomHex(16),
       issuedAt: Date.now()
     };
-    await publishRelayMessage(topic, JSON.stringify(command));
-    controlStatus.textContent = 'UNLOCK COMMAND SENT. Carbondale will unlock the computer without a PC-side step.';
+    await publishRelayMessage(topic, JSON.stringify(unlockCommand));
+    controlStatus.textContent = 'EXIT + UNLOCK COMMANDS SENT. Carbondale will open the computer without a PC-side step.';
   } catch (e) {
     controlStatus.textContent = 'UNLOCK FAILED: ' + faceIdErrorText(e);
   } finally {
