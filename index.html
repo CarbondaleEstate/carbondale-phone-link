@@ -48,10 +48,10 @@
       <div class="small">No SMS. No phone number. Every request is one-time and expires automatically.</div>
     </section>
 
-    <section id="wordClockControl" class="request">
-      <div class="request-label">WORD CLOCK CONTROL</div>
-      <p style="margin-top:10px">If Word Clock is running, you can close it from here without touching the PC keyboard and without first pressing F9.</p>
-      <button id="closeWordClock">CLOSE WORD CLOCK</button>
+    <section id="computerControl" class="request">
+      <div class="request-label">COMPUTER CONTROL</div>
+      <p style="margin-top:10px">Unlock this computer from here. This works from the Carbondale Word Clock screensaver or the Windows lock screen without touching the PC.</p>
+      <button id="unlockComputer">UNLOCK COMPUTER</button>
       <div id="controlStatus" class="status">Ready.</div>
     </section>
 
@@ -62,7 +62,7 @@
 
       <section class="request" id="faceIdPanel">
         <div class="request-label">FACE ID</div>
-        <p style="margin-top:10px">Set up Face ID once on this iPhone. After that, APPROVE and CLOSE WORD CLOCK require Apple user verification before Carbondale sends the command.</p>
+        <p style="margin-top:10px">Set up Face ID once on this iPhone. After that, APPROVE and UNLOCK COMPUTER require Apple user verification before Carbondale sends the command.</p>
         <button id="setupFaceId">SET UP FACE ID</button>
         <div id="faceIdStatus" class="status">Checking Face ID…</div>
       </section>
@@ -75,11 +75,11 @@
         <button id="copy">COPY PAIRING DATA</button>
       </section>
 
-      <div class="small">v1.6 — Passkey identity label: the existing Carbondale passkey is preserved and its Apple Passwords label is synchronized to “Carbondale Owner, Dennis Michael Tiffany” after successful authentication.</div>
+      <div class="small">v1.7 — UNLOCK COMPUTER is the single computer-unlock command. It works from Word Clock or the Windows lock screen; no PC keyboard or mouse step is part of the flow.</div>
     </section>
   </main>
 <script>
-const APP_VERSION = '1.6';
+const APP_VERSION = '1.7';
 const SW_URL = 'service-worker.js?v=' + APP_VERSION;
 const VAPID_PUBLIC_KEY = 'BKMeLu16Zdt-vT8V1YLf5DUVssKPZLxpmBcIaFjx8jOMl3nr5SM-sgjaQtebOHB0cHDZWOpJ5SpqHoo4rEQq9mY';
 const SITE = 'https://carbondaleestate.github.io/carbondale-phone-link/';
@@ -101,7 +101,7 @@ const statusEl = document.getElementById('status');
 const area = document.getElementById('pairingArea');
 const pairingText = document.getElementById('pairingText');
 const controlStatus = document.getElementById('controlStatus');
-const closeWordClockButton = document.getElementById('closeWordClock');
+const unlockComputerButton = document.getElementById('unlockComputer');
 const setupFaceIdButton = document.getElementById('setupFaceId');
 const faceIdStatus = document.getElementById('faceIdStatus');
 const FACE_ID_CREDENTIAL_KEY = 'carbondale-faceid-credential-id-v2';
@@ -449,28 +449,28 @@ async function publishRelayMessage(topic, message) {
   return response;
 }
 
-async function closeWordClockFromPhone() {
-  closeWordClockButton.disabled = true;
-  controlStatus.textContent = 'Sending close command to Word Clock…';
+async function unlockComputerFromPhone() {
+  unlockComputerButton.disabled = true;
+  controlStatus.textContent = 'Preparing to unlock computer…';
   try {
     controlStatus.textContent = 'Face ID required…';
-    await requireFaceId('Close Word Clock');
-    controlStatus.textContent = 'Face ID verified. Sending close command…';
+    await requireFaceId('Unlock Computer');
+    controlStatus.textContent = 'Face ID verified. Sending unlock command…';
     const topic = await deriveControlTopic();
     if (!topic) throw new Error('This iPhone is not currently paired.');
     const command = {
       version: 'CarbondaleControl/1',
       type: 'control-command',
-      command: 'close-word-clock',
+      command: 'unlock-computer',
       commandID: randomHex(16),
       issuedAt: Date.now()
     };
     await publishRelayMessage(topic, JSON.stringify(command));
-    controlStatus.textContent = 'CLOSE COMMAND SENT. If Word Clock is running, it should close now.';
+    controlStatus.textContent = 'UNLOCK COMMAND SENT. Carbondale will unlock the computer without a PC-side step.';
   } catch (e) {
-    controlStatus.textContent = 'CLOSE FAILED: ' + faceIdErrorText(e);
+    controlStatus.textContent = 'UNLOCK FAILED: ' + faceIdErrorText(e);
   } finally {
-    closeWordClockButton.disabled = false;
+    unlockComputerButton.disabled = false;
   }
 }
 
@@ -626,7 +626,7 @@ async function sendDecision(decision) {
 
 approveButton.addEventListener('click', () => sendDecision('APPROVE'));
 denyButton.addEventListener('click', () => sendDecision('DENY'));
-closeWordClockButton.addEventListener('click', closeWordClockFromPhone);
+unlockComputerButton.addEventListener('click', unlockComputerFromPhone);
 setupFaceIdButton.addEventListener('click', setupFaceId);
 
 function b64ToUint8Array(base64String) {
